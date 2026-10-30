@@ -1,0 +1,18 @@
+[package]
+name = "msg_convert"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "msg-convert"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+msg_amrex = { path = "../msg_amrex" }
+msg_vti = { path = "../msg_vti" }
+multires_rs = { path = "../multires_rs" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
