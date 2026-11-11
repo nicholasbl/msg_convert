@@ -1,78 +1,87 @@
 # msg_convert
 
-`msg-convert` is a command-line frontend for converting AMReX plotfiles and
-VTK XML ImageData (`.vti`) files into MSG archives. Input and output formats are
-inferred when possible and can be supplied explicitly when paths are ambiguous.
+`msg-convert` converts AMReX plotfiles and VTK XML ImageData (`.vti`) files
+into MSG archives. Formats are inferred from paths when possible.
 
 ```sh
 msg-convert plt00010 plt00010.msg
 msg-convert simulation.vti simulation.msg
-msg-convert --input-format amrex INPUT OUTPUT
 msg-convert --config conversion.toml
 ```
 
-Source-specific settings select imported data. `[msg]` settings control archive
-encoding after import.
+Configuration is split by responsibility:
+
+- `[input]` and `[output]` identify files and optional formats.
+- `[source]` selects imported variables or arrays.
+- `[source.amrex]` controls AMReX-specific invalid-value handling.
+- `[encoding.defaults]` sets the default MSG codec policy.
+- `[[encoding.fields]]` transforms or overrides individual final MSG fields.
 
 ```toml
-input = "simulation.vti"
-output = "simulation.msg"
+[input]
+path = "simulation.vti"
 
-[vti]
+[output]
+path = "simulation.msg"
+
+[source]
 fields = ["density", "velocity"]
 
-[msg]
+[encoding.defaults]
 codec = "auto:lossless"
 
-[[msg.fields]]
+[[encoding.fields]]
+# Multi-component VTI arrays become final fields such as velocity_x.
 name = "velocity_x"
 codec = "quantized:u16"
 error = { relative_percent = 0.1 }
 ```
 
-Multi-component VTI arrays are selected by their source name and become scalar
-MSG fields with suffixes such as `_x`, `_y`, and `_z`.
-
-AMReX fields may be names or inline tables when a logical scalar type is needed:
+AMReX source fields default to `f32`; use `precision = "f64"` when required.
+The invalid-value policy is either `"reject"` or `"zero"`.
 
 ```toml
-input = "plt00010"
-output = "plt00010.msg"
+[input]
+path = "plt00010"
+format = "amrex"
 
-[amrex]
-replace_invalid = false
+[output]
+path = "plt00010.msg"
+
+[source]
 fields = [
     "temperature",
-    { name = "density", scalar_type = "f64" },
+    { name = "density", precision = "f64" },
 ]
 
-[[msg.fields]]
+[source.amrex]
+invalid_values = "reject"
+
+[[encoding.fields]]
 name = "density"
+normalize = { min = 0.0, max = 1.0 }
 codec = "auto:smallest"
-normalize = [0.0, 1.0]
 error = { absolute = 0.0, relative_percent = 0.01 }
 ```
 
-`normalize = [min, max]` maps and clamps a final MSG field with
+Normalization maps and clamps a final field with
 `(value - min) / (max - min)`. Stored values are in `[0, 1]`, while the
-original finite, strictly increasing bounds are retained in archive metadata.
-Codec error tolerances for normalized fields are still interpreted in the
-original physical units. Normalization can be configured with or without a
-per-field codec override.
+original finite, strictly increasing bounds remain in archive metadata. Codec
+error tolerances remain expressed in the original physical units.
 
-The former `amrex-to-msg` keys `replace_invalid` and `[[variables]]` remain
-accepted for migration, including `normalize` on a legacy variable.
+Command-line input and output paths may override both configured paths as a
+pair. `--field` and `--amrex-replace-invalid` are available only without
+`--config`.
 
 ## Examples
 
 Annotated configurations are available in [`examples/`](examples):
 
-- [`amrex.toml`](examples/amrex.toml) covers AMReX field selection, scalar
-  types, invalid-value handling, normalization, and per-field codec overrides.
-- [`vti.toml`](examples/vti.toml) covers VTI array selection, vector component
-  naming, normalization, and absolute or relative error budgets.
-- [`codecs.toml`](examples/codecs.toml) lists every supported codec and its
-  error-tolerance requirements.
+- [`amrex.toml`](examples/amrex.toml) covers source precision, invalid values,
+  normalization, and a per-field codec override.
+- [`vti.toml`](examples/vti.toml) covers array selection, vector components,
+  normalization, and error budgets.
+- [`codecs.toml`](examples/codecs.toml) lists every codec and its requirements.
 
 Run one after replacing its sample paths and field names:
 

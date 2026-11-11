@@ -1,40 +1,36 @@
 # Convert an AMReX plotfile directory into an MSG archive.
-# Paths are interpreted relative to the directory where msg-convert is run.
-input = "plt00010"
-output = "plt00010.msg"
+[input]
+path = "plt00010"
+# Plotfile directories have no extension, so declaring the format avoids
+# depending on the path already existing and containing a Header file.
+format = "amrex"
 
-# A plotfile directory has no filename extension, so declaring the input format
-# is useful when the directory does not exist yet or does not contain Header.
-# The output_format key is optional here because .msg is recognized.
-input_format = "amrex"
-# output_format = "msg"
+[output]
+path = "plt00010.msg"
+# format = "msg" # Optional because the .msg extension is recognized.
 
-[amrex]
-# By default, NaN, infinity, and values that cannot fit the requested scalar
-# type stop conversion. Set this to true to replace them with zero and print
-# the number of replacements for each field.
-replace_invalid = false
-
+[source]
 # Select source variables in output order. A bare name uses f32. Use an inline
-# table when a field must retain f64 precision in the logical MSG dataset.
+# table to retain f64 precision in the logical MSG field.
 fields = [
     "temperature",
-    { name = "density", scalar_type = "f64" },
+    { name = "density", precision = "f64" },
 ]
 
-[msg]
-# This default applies to every selected output field. auto:lossless preserves
-# values exactly, using uniform chunks when possible and otherwise the field's
-# native dense representation. It does not accept an error tolerance.
+[source.amrex]
+# reject stops on NaN, infinity, or an unrepresentable source value. zero
+# replaces such values with physical zero and reports each field's count.
+invalid_values = "reject"
+
+[encoding.defaults]
+# Applies to every selected output field unless overridden below.
 codec = "auto:lossless"
 
-[[msg.fields]]
-# Per-field entries override the [msg] default. auto:smallest tests all suitable
-# encodings and chooses the smallest one that satisfies this error budget.
-# normalize maps and clamps the original interval into [0, 1], while retaining
-# the original bounds in MSG metadata. Codec errors remain in physical units.
+[[encoding.fields]]
+# Encoding entries name final MSG fields. Normalization maps and clamps the
+# physical interval into [0, 1] and retains the original bounds as metadata.
+# Codec error tolerances remain expressed in original physical units.
 name = "temperature"
+normalize = { min = 200.0, max = 2000.0 }
 codec = "auto:smallest"
-normalize = [200.0, 2000.0]
 error = { absolute = 0.1, relative_percent = 0.01 }
-

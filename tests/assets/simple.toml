@@ -1,6 +1,6 @@
-[vti]
+[source]
 fields = ["density"]
 
-[[msg.fields]]
+[[encoding.fields]]
 name = "density"
 codec = "dense:f32"

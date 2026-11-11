@@ -86,33 +86,41 @@ enum OutputFormat {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Config {
-    input: Option<PathBuf>,
-    output: Option<PathBuf>,
-    input_format: Option<InputFormat>,
-    output_format: Option<OutputFormat>,
-    amrex: AmrexConfig,
-    vti: VtiConfig,
-    msg: MsgConfig,
-    // Compatibility with the former amrex-to-msg configuration shape.
-    variables: Vec<LegacyVariableConfig>,
-    replace_invalid: Option<bool>,
+    input: InputConfig,
+    output: OutputConfig,
+    source: SourceConfig,
+    encoding: EncodingConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct AmrexConfig {
-    fields: Vec<AmrexFieldSelection>,
-    replace_invalid: bool,
+struct InputConfig {
+    path: Option<PathBuf>,
+    format: Option<InputFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct OutputConfig {
+    path: Option<PathBuf>,
+    format: Option<OutputFormat>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SourceConfig {
+    fields: Vec<SourceFieldSelection>,
+    amrex: Option<AmrexSourceConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
-enum AmrexFieldSelection {
+enum SourceFieldSelection {
     Name(String),
-    Detailed(AmrexFieldConfig),
+    Detailed(SourceFieldConfig),
 }
 
-impl AmrexFieldSelection {
+impl SourceFieldSelection {
     fn name(&self) -> &str {
         match self {
             Self::Name(name) => name,
@@ -120,52 +128,67 @@ impl AmrexFieldSelection {
         }
     }
 
-    fn scalar_type(&self) -> ConfigScalarType {
+    fn precision(&self) -> ConfigScalarType {
         match self {
             Self::Name(_) => ConfigScalarType::F32,
-            Self::Detailed(field) => field.scalar_type.unwrap_or(ConfigScalarType::F32),
+            Self::Detailed(field) => field.precision.unwrap_or(ConfigScalarType::F32),
         }
+    }
+
+    fn has_precision(&self) -> bool {
+        matches!(self, Self::Detailed(field) if field.precision.is_some())
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AmrexFieldConfig {
+struct SourceFieldConfig {
     name: String,
-    scalar_type: Option<ConfigScalarType>,
+    precision: Option<ConfigScalarType>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct VtiConfig {
-    fields: Vec<String>,
+struct AmrexSourceConfig {
+    invalid_values: InvalidValueConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum InvalidValueConfig {
+    #[default]
+    Reject,
+    Zero,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-struct MsgConfig {
+struct EncodingConfig {
+    defaults: EncodingDefaultsConfig,
+    fields: Vec<EncodingFieldConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct EncodingDefaultsConfig {
     codec: Option<String>,
     error: Option<ErrorConfig>,
-    fields: Vec<MsgFieldConfig>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct MsgFieldConfig {
+struct EncodingFieldConfig {
     name: String,
     codec: Option<String>,
     error: Option<ErrorConfig>,
-    normalize: Option<[f64; 2]>,
+    normalize: Option<NormalizationConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LegacyVariableConfig {
-    name: String,
-    scalar_type: Option<ConfigScalarType>,
-    codec: Option<String>,
-    error: Option<ErrorConfig>,
-    normalize: Option<[f64; 2]>,
+struct NormalizationConfig {
+    min: f64,
+    max: f64,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -215,10 +238,12 @@ impl Resolved {
             (None, None) => (
                 config
                     .input
+                    .path
                     .take()
                     .context("missing INPUT path on the command line and in the config")?,
                 config
                     .output
+                    .path
                     .take()
                     .context("missing OUTPUT path on the command line and in the config")?,
             ),
@@ -227,12 +252,12 @@ impl Resolved {
 
         let input_format = cli
             .input_format
-            .or(config.input_format)
+            .or(config.input.format)
             .map(Ok)
             .unwrap_or_else(|| infer_input_format(&input))?;
         let output_format = cli
             .output_format
-            .or(config.output_format)
+            .or(config.output.format)
             .map(Ok)
             .unwrap_or_else(|| infer_output_format(&output))?;
         ensure!(
@@ -260,7 +285,7 @@ fn infer_input_format(path: &Path) -> Result<InputFormat> {
         return Ok(InputFormat::Amrex);
     }
     bail!(
-        "cannot infer the input format from {}; use --input-format or input_format in TOML",
+        "cannot infer the input format from {}; use --input-format or [input].format in TOML",
         path.display()
     )
 }
@@ -270,7 +295,7 @@ fn infer_output_format(path: &Path) -> Result<OutputFormat> {
         Ok(OutputFormat::Msg)
     } else {
         bail!(
-            "cannot infer the output format from {}; use --output-format or output_format in TOML",
+            "cannot infer the output format from {}; use --output-format or [output].format in TOML",
             path.display()
         )
     }
@@ -283,52 +308,81 @@ fn extension_is(path: &Path, expected: &str) -> bool {
 }
 
 fn validate_config_for_format(config: &Config, format: InputFormat) -> Result<()> {
-    match format {
-        InputFormat::Amrex => ensure!(
-            config.vti.fields.is_empty(),
-            "[vti] options cannot be used with AMReX input"
-        ),
-        InputFormat::Vti => {
-            ensure!(
-                config.amrex.fields.is_empty()
-                    && !config.amrex.replace_invalid
-                    && config.variables.is_empty()
-                    && config.replace_invalid.is_none(),
-                "AMReX options cannot be used with VTI input"
-            );
+    if format == InputFormat::Vti {
+        ensure!(
+            config.source.amrex.is_none(),
+            "[source.amrex] options cannot be used with VTI input"
+        );
+        ensure!(
+            config
+                .source
+                .fields
+                .iter()
+                .all(|field| !field.has_precision()),
+            "source field precision is supported only for AMReX input"
+        );
+    }
+    for (index, field) in config.source.fields.iter().enumerate() {
+        ensure!(
+            !config.source.fields[..index]
+                .iter()
+                .any(|earlier| earlier.name() == field.name()),
+            "source field {:?} is configured more than once",
+            field.name()
+        );
+    }
+    match (
+        &config.encoding.defaults.codec,
+        config.encoding.defaults.error,
+    ) {
+        (None, None) => {}
+        (None, Some(_)) => bail!("[encoding.defaults].error requires a codec"),
+        (Some(codec), error) => {
+            parse_codec(codec)?;
+            resolve_error(error)?;
         }
     }
-    ensure!(
-        config.variables.is_empty() || config.amrex.fields.is_empty(),
-        "legacy [[variables]] and [amrex].fields cannot both be configured"
-    );
+    for (index, field) in config.encoding.fields.iter().enumerate() {
+        ensure!(
+            !config.encoding.fields[..index]
+                .iter()
+                .any(|earlier| earlier.name == field.name),
+            "encoding field {:?} is configured more than once",
+            field.name
+        );
+        ensure!(
+            field.codec.is_some() || field.normalize.is_some(),
+            "encoding field {:?} must configure codec or normalize",
+            field.name
+        );
+        match (&field.codec, field.error) {
+            (None, None) => {}
+            (None, Some(_)) => bail!(
+                "encoding field {:?} has an error tolerance but no codec",
+                field.name
+            ),
+            (Some(codec), error) => {
+                parse_codec(codec)?;
+                resolve_error(error)?;
+            }
+        }
+        if let Some(normalization) = field.normalize {
+            resolve_normalization(normalization)?;
+        }
+    }
     Ok(())
 }
 
 fn import_from_amrex(resolved: &Resolved) -> Result<(MsgDataset, String)> {
     let plotfile = PlotFile::open(&resolved.input)
         .with_context(|| format!("opening AMReX plotfile {}", resolved.input.display()))?;
-    let configured = if resolved.config.variables.is_empty() {
-        resolved
-            .config
-            .amrex
-            .fields
-            .iter()
-            .map(|field| (field.name(), field.scalar_type()))
-            .collect::<Vec<_>>()
-    } else {
-        resolved
-            .config
-            .variables
-            .iter()
-            .map(|field| {
-                (
-                    field.name.as_str(),
-                    field.scalar_type.unwrap_or(ConfigScalarType::F32),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
+    let configured = resolved
+        .config
+        .source
+        .fields
+        .iter()
+        .map(|field| (field.name(), field.precision()))
+        .collect::<Vec<_>>();
     let requested = if resolved.cli_fields.is_empty() {
         configured
     } else {
@@ -356,8 +410,12 @@ fn import_from_amrex(resolved: &Resolved) -> Result<(MsgDataset, String)> {
         });
     }
     let replace_invalid = resolved.cli_replace_invalid
-        || resolved.config.amrex.replace_invalid
-        || resolved.config.replace_invalid.unwrap_or(false);
+        || resolved
+            .config
+            .source
+            .amrex
+            .as_ref()
+            .is_some_and(|config| config.invalid_values == InvalidValueConfig::Zero);
     let (dataset, report) = import_amrex(
         &plotfile,
         &AmrexImportOptions {
@@ -390,7 +448,13 @@ fn import_from_amrex(resolved: &Resolved) -> Result<(MsgDataset, String)> {
 
 fn import_from_vti(resolved: &Resolved) -> Result<(MsgDataset, String)> {
     let fields = if resolved.cli_fields.is_empty() {
-        resolved.config.vti.fields.clone()
+        resolved
+            .config
+            .source
+            .fields
+            .iter()
+            .map(|field| field.name().to_owned())
+            .collect()
     } else {
         resolved.cli_fields.clone()
     };
@@ -408,16 +472,10 @@ fn import_from_vti(resolved: &Resolved) -> Result<(MsgDataset, String)> {
 
 fn normalize_fields(dataset: &mut MsgDataset, config: &Config) -> Result<()> {
     let configured = config
-        .msg
+        .encoding
         .fields
         .iter()
         .filter_map(|field| field.normalize.map(|bounds| (field.name.as_str(), bounds)))
-        .chain(
-            config
-                .variables
-                .iter()
-                .filter_map(|field| field.normalize.map(|bounds| (field.name.as_str(), bounds))),
-        )
         .collect::<Vec<_>>();
     for (index, &(name, bounds)) in configured.iter().enumerate() {
         ensure!(
@@ -453,18 +511,11 @@ fn normalize_value(value: f64, normalization: MsgNormalization) -> f64 {
 
 fn configured_normalization(config: &Config, name: &str) -> Result<Option<MsgNormalization>> {
     let bounds = config
-        .msg
+        .encoding
         .fields
         .iter()
         .filter(|field| field.name == name)
         .filter_map(|field| field.normalize)
-        .chain(
-            config
-                .variables
-                .iter()
-                .filter(|field| field.name == name)
-                .filter_map(|field| field.normalize),
-        )
         .collect::<Vec<_>>();
     ensure!(
         bounds.len() <= 1,
@@ -477,8 +528,8 @@ fn configured_normalization(config: &Config, name: &str) -> Result<Option<MsgNor
         .transpose()
 }
 
-fn resolve_normalization(bounds: [f64; 2]) -> Result<MsgNormalization> {
-    let [min, max] = bounds;
+fn resolve_normalization(bounds: NormalizationConfig) -> Result<MsgNormalization> {
+    let NormalizationConfig { min, max } = bounds;
     ensure!(
         min.is_finite() && max.is_finite() && min < max,
         "normalization bounds must be finite and strictly increasing"
@@ -487,9 +538,12 @@ fn resolve_normalization(bounds: [f64; 2]) -> Result<MsgNormalization> {
 }
 
 fn codec_policies(dataset: &MsgDataset, config: &Config) -> Result<Vec<MsgFieldCodec>> {
-    let default = match (&config.msg.codec, config.msg.error) {
+    let default = match (
+        &config.encoding.defaults.codec,
+        config.encoding.defaults.error,
+    ) {
         (None, None) => None,
-        (None, Some(_)) => bail!("[msg].error requires [msg].codec"),
+        (None, Some(_)) => bail!("[encoding.defaults].error requires a codec"),
         (Some(codec), error) => Some((parse_codec(codec)?, resolve_error(error)?)),
     };
     let mut policies = dataset
@@ -504,9 +558,9 @@ fn codec_policies(dataset: &MsgDataset, config: &Config) -> Result<Vec<MsgFieldC
         })
         .collect::<Vec<_>>();
 
-    for (index, field) in config.msg.fields.iter().enumerate() {
+    for (index, field) in config.encoding.fields.iter().enumerate() {
         ensure!(
-            !config.msg.fields[..index]
+            !config.encoding.fields[..index]
                 .iter()
                 .any(|earlier| earlier.name == field.name),
             "MSG output field {:?} is configured more than once",
@@ -521,18 +575,6 @@ fn codec_policies(dataset: &MsgDataset, config: &Config) -> Result<Vec<MsgFieldC
             (None, None) => {}
             (None, Some(_)) => bail!(
                 "MSG output field {:?} has an error tolerance but no codec",
-                field.name
-            ),
-            (Some(codec), error) => {
-                set_field_policy(dataset, &mut policies, &field.name, codec, error)?;
-            }
-        }
-    }
-    for field in &config.variables {
-        match (&field.codec, field.error) {
-            (None, None) => {}
-            (None, Some(_)) => bail!(
-                "legacy variable {:?} has an error tolerance but no codec",
                 field.name
             ),
             (Some(codec), error) => {
@@ -640,51 +682,98 @@ mod tests {
     fn parses_modern_vti_configuration() {
         let config: Config = toml::from_str(
             r#"
-input = "sample.vti"
-output = "sample.msg"
+[input]
+path = "sample.vti"
 
-[vti]
+[output]
+path = "sample.msg"
+
+[source]
 fields = ["density", "velocity"]
 
-[msg]
+[encoding.defaults]
 codec = "auto:lossless"
 
-[[msg.fields]]
+[[encoding.fields]]
 name = "velocity_x"
 codec = "quantized:u16"
 error = { relative_percent = 0.1 }
 "#,
         )
         .unwrap();
-        assert_eq!(config.vti.fields, ["density", "velocity"]);
-        assert_eq!(config.msg.fields.len(), 1);
+        assert_eq!(
+            config
+                .source
+                .fields
+                .iter()
+                .map(SourceFieldSelection::name)
+                .collect::<Vec<_>>(),
+            ["density", "velocity"]
+        );
+        assert_eq!(config.encoding.fields.len(), 1);
     }
 
     #[test]
-    fn parses_legacy_amrex_configuration() {
+    fn parses_amrex_configuration() {
         let config: Config = toml::from_str(
             r#"
-input = "plt00010"
-output = "plt00010.msg"
-replace_invalid = false
+[input]
+path = "plt00010"
+format = "amrex"
 
-[[variables]]
+[output]
+path = "plt00010.msg"
+
+[source]
+fields = [{ name = "density", precision = "f64" }]
+
+[source.amrex]
+invalid_values = "zero"
+
+[[encoding.fields]]
 name = "density"
-scalar_type = "f64"
 codec = "auto:smallest"
-normalize = [1.0e20, 1.000000001e20]
+normalize = { min = 1.0e20, max = 1.000000001e20 }
 error = { absolute = 0.0, relative_percent = 0.01 }
 "#,
         )
         .unwrap();
-        assert_eq!(config.variables.len(), 1);
-        assert_eq!(config.replace_invalid, Some(false));
+        assert_eq!(config.source.fields.len(), 1);
+        assert_eq!(
+            config.source.amrex.as_ref().unwrap().invalid_values,
+            InvalidValueConfig::Zero
+        );
         assert_eq!(
             configured_normalization(&config, "density").unwrap(),
             Some(MsgNormalization {
                 min: 1.0e20,
                 max: 1.000000001e20
             })
+        );
+    }
+
+    #[test]
+    fn rejects_removed_configuration_shapes() {
+        assert!(
+            toml::from_str::<Config>(
+                r#"
+input = "sample.vti"
+output = "sample.msg"
+
+[vti]
+fields = ["density"]
+"#,
+            )
+            .is_err()
+        );
+        assert!(
+            toml::from_str::<Config>(
+                r#"
+[[variables]]
+name = "density"
+"#,
+            )
+            .is_err()
         );
     }
 
@@ -700,11 +789,11 @@ error = { absolute = 0.0, relative_percent = 0.01 }
             let config: Config = toml::from_str(source).unwrap();
             validate_config_for_format(&config, input_format).unwrap();
 
-            if let Some(codec) = &config.msg.codec {
+            if let Some(codec) = &config.encoding.defaults.codec {
                 parse_codec(codec).unwrap();
-                resolve_error(config.msg.error).unwrap();
+                resolve_error(config.encoding.defaults.error).unwrap();
             }
-            for field in &config.msg.fields {
+            for field in &config.encoding.fields {
                 if let Some(codec) = &field.codec {
                     parse_codec(codec).unwrap();
                 }
@@ -719,9 +808,9 @@ error = { absolute = 0.0, relative_percent = 0.01 }
         let (mut dataset, _) = import_vti(&path, &VtiImportOptions::default()).unwrap();
         let config: Config = toml::from_str(
             r#"
-[[msg.fields]]
+[[encoding.fields]]
 name = "density"
-normalize = [0.0, 2.0]
+normalize = { min = 0.0, max = 2.0 }
 "#,
         )
         .unwrap();
