@@ -11,7 +11,7 @@ use msg_amrex::{AmrexField, AmrexImportOptions, InvalidValuePolicy, PlotFile, im
 use msg_vti::{VtiImportOptions, import_vti};
 use multires_rs::{
     MsgChunkCodec, MsgChunkCodecSelection, MsgDataset, MsgErrorTolerance, MsgFieldCodec,
-    MsgScalarType, MsgWriteOptions, write_msg,
+    MsgNormalization, MsgScalarType, MsgWriteOptions, write_msg,
 };
 use serde::Deserialize;
 
@@ -19,10 +19,11 @@ fn main() -> Result<()> {
     let resolved = Resolved::resolve(Cli::parse())?;
     reject_same_file(&resolved.input, &resolved.output)?;
 
-    let (dataset, import_description) = match resolved.input_format {
+    let (mut dataset, import_description) = match resolved.input_format {
         InputFormat::Amrex => import_from_amrex(&resolved)?,
         InputFormat::Vti => import_from_vti(&resolved)?,
     };
+    normalize_fields(&mut dataset, &resolved.config)?;
     let codecs = codec_policies(&dataset, &resolved.config)?;
     let file = File::create(&resolved.output)
         .with_context(|| format!("creating MSG archive {}", resolved.output.display()))?;
@@ -152,8 +153,9 @@ struct MsgConfig {
 #[serde(deny_unknown_fields)]
 struct MsgFieldConfig {
     name: String,
-    codec: String,
+    codec: Option<String>,
     error: Option<ErrorConfig>,
+    normalize: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +165,7 @@ struct LegacyVariableConfig {
     scalar_type: Option<ConfigScalarType>,
     codec: Option<String>,
     error: Option<ErrorConfig>,
+    normalize: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -349,6 +352,7 @@ fn import_from_amrex(resolved: &Resolved) -> Result<(MsgDataset, String)> {
         fields.push(AmrexField {
             component: variable.index,
             scalar_type: (*scalar_type).into(),
+            normalization: configured_normalization(&resolved.config, name)?,
         });
     }
     let replace_invalid = resolved.cli_replace_invalid
@@ -402,6 +406,86 @@ fn import_from_vti(resolved: &Resolved) -> Result<(MsgDataset, String)> {
     ))
 }
 
+fn normalize_fields(dataset: &mut MsgDataset, config: &Config) -> Result<()> {
+    let configured = config
+        .msg
+        .fields
+        .iter()
+        .filter_map(|field| field.normalize.map(|bounds| (field.name.as_str(), bounds)))
+        .chain(
+            config
+                .variables
+                .iter()
+                .filter_map(|field| field.normalize.map(|bounds| (field.name.as_str(), bounds))),
+        )
+        .collect::<Vec<_>>();
+    for (index, &(name, bounds)) in configured.iter().enumerate() {
+        ensure!(
+            !configured[..index]
+                .iter()
+                .any(|(earlier, _)| *earlier == name),
+            "MSG output field {name:?} is normalized more than once"
+        );
+        let normalization = resolve_normalization(bounds)?;
+        let field = dataset
+            .field_mut(name)
+            .with_context(|| format!("MSG dataset has no output field {name:?}"))?;
+        if let Some(existing) = field.normalization() {
+            ensure!(
+                existing == normalization,
+                "MSG output field {name:?} has conflicting normalization bounds"
+            );
+            continue;
+        }
+        for level in field.levels_mut() {
+            level
+                .values_mut()
+                .map_values(|value| normalize_value(value, normalization));
+        }
+        field.set_normalization(Some(normalization));
+    }
+    Ok(())
+}
+
+fn normalize_value(value: f64, normalization: MsgNormalization) -> f64 {
+    ((value - normalization.min) / (normalization.max - normalization.min)).clamp(0.0, 1.0)
+}
+
+fn configured_normalization(config: &Config, name: &str) -> Result<Option<MsgNormalization>> {
+    let bounds = config
+        .msg
+        .fields
+        .iter()
+        .filter(|field| field.name == name)
+        .filter_map(|field| field.normalize)
+        .chain(
+            config
+                .variables
+                .iter()
+                .filter(|field| field.name == name)
+                .filter_map(|field| field.normalize),
+        )
+        .collect::<Vec<_>>();
+    ensure!(
+        bounds.len() <= 1,
+        "MSG output field {name:?} is normalized more than once"
+    );
+    bounds
+        .first()
+        .copied()
+        .map(resolve_normalization)
+        .transpose()
+}
+
+fn resolve_normalization(bounds: [f64; 2]) -> Result<MsgNormalization> {
+    let [min, max] = bounds;
+    ensure!(
+        min.is_finite() && max.is_finite() && min < max,
+        "normalization bounds must be finite and strictly increasing"
+    );
+    Ok(MsgNormalization { min, max })
+}
+
 fn codec_policies(dataset: &MsgDataset, config: &Config) -> Result<Vec<MsgFieldCodec>> {
     let default = match (&config.msg.codec, config.msg.error) {
         (None, None) => None,
@@ -428,13 +512,21 @@ fn codec_policies(dataset: &MsgDataset, config: &Config) -> Result<Vec<MsgFieldC
             "MSG output field {:?} is configured more than once",
             field.name
         );
-        set_field_policy(
-            dataset,
-            &mut policies,
-            &field.name,
-            &field.codec,
-            field.error,
-        )?;
+        ensure!(
+            field.codec.is_some() || field.normalize.is_some(),
+            "MSG output field {:?} must configure codec or normalize",
+            field.name
+        );
+        match (&field.codec, field.error) {
+            (None, None) => {}
+            (None, Some(_)) => bail!(
+                "MSG output field {:?} has an error tolerance but no codec",
+                field.name
+            ),
+            (Some(codec), error) => {
+                set_field_policy(dataset, &mut policies, &field.name, codec, error)?;
+            }
+        }
     }
     for field in &config.variables {
         match (&field.codec, field.error) {
@@ -580,11 +672,80 @@ replace_invalid = false
 name = "density"
 scalar_type = "f64"
 codec = "auto:smallest"
+normalize = [1.0e20, 1.000000001e20]
 error = { absolute = 0.0, relative_percent = 0.01 }
 "#,
         )
         .unwrap();
         assert_eq!(config.variables.len(), 1);
         assert_eq!(config.replace_invalid, Some(false));
+        assert_eq!(
+            configured_normalization(&config, "density").unwrap(),
+            Some(MsgNormalization {
+                min: 1.0e20,
+                max: 1.000000001e20
+            })
+        );
+    }
+
+    #[test]
+    fn parses_annotated_example_configurations() {
+        let examples = [
+            (include_str!("../examples/amrex.toml"), InputFormat::Amrex),
+            (include_str!("../examples/vti.toml"), InputFormat::Vti),
+            (include_str!("../examples/codecs.toml"), InputFormat::Vti),
+        ];
+
+        for (source, input_format) in examples {
+            let config: Config = toml::from_str(source).unwrap();
+            validate_config_for_format(&config, input_format).unwrap();
+
+            if let Some(codec) = &config.msg.codec {
+                parse_codec(codec).unwrap();
+                resolve_error(config.msg.error).unwrap();
+            }
+            for field in &config.msg.fields {
+                if let Some(codec) = &field.codec {
+                    parse_codec(codec).unwrap();
+                }
+                resolve_error(field.error).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn normalizes_values_and_preserves_original_bounds() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/assets/simple.vti");
+        let (mut dataset, _) = import_vti(&path, &VtiImportOptions::default()).unwrap();
+        let config: Config = toml::from_str(
+            r#"
+[[msg.fields]]
+name = "density"
+normalize = [0.0, 2.0]
+"#,
+        )
+        .unwrap();
+
+        normalize_fields(&mut dataset, &config).unwrap();
+        let normalization = MsgNormalization { min: 0.0, max: 2.0 };
+        assert_eq!(normalize_value(-1.0, normalization), 0.0);
+        assert_eq!(normalize_value(1.0, normalization), 0.5);
+        assert_eq!(normalize_value(3.0, normalization), 1.0);
+        assert_eq!(
+            dataset.field("density").unwrap().normalization(),
+            Some(normalization)
+        );
+        dataset.validate().unwrap();
+
+        let mut bytes = Vec::new();
+        write_msg(&dataset, &MsgWriteOptions::default(), &mut bytes).unwrap();
+        assert_eq!(
+            multires_rs::view_msg(&bytes)
+                .unwrap()
+                .field("density")
+                .unwrap()
+                .normalization(),
+            Some(normalization)
+        );
     }
 }

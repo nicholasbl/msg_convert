@@ -353,7 +353,7 @@ dependencies = [
 [[package]]
 name = "msg_amrex"
 version = "0.1.0"
-source = "git+https://github.com/nicholasbl/msg_amrex.git?branch=main#3334bf456b45a62be2ba4e2170a3e66d0e62df56"
+source = "git+https://github.com/nicholasbl/msg_amrex.git?branch=main#a1e721588cc0c773dfcf719a3473e598ac24261f"
 dependencies = [
  "anyhow",
  "glam",
@@ -393,7 +393,7 @@ dependencies = [
 [[package]]
 name = "multires_rs"
 version = "0.1.0"
-source = "git+https://github.com/nicholasbl/multires_rs.git?branch=main#a58ceec9e7f805e39a50e2533b0c65ae135332ce"
+source = "git+https://github.com/nicholasbl/multires_rs.git?branch=main#73fc9d1aa38b29a9f656eb93930d7dad406ecea4"
 dependencies = [
  "anyhow",
  "clap",

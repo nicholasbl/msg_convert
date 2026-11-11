@@ -49,8 +49,33 @@ fields = [
 [[msg.fields]]
 name = "density"
 codec = "auto:smallest"
+normalize = [0.0, 1.0]
 error = { absolute = 0.0, relative_percent = 0.01 }
 ```
 
+`normalize = [min, max]` maps and clamps a final MSG field with
+`(value - min) / (max - min)`. Stored values are in `[0, 1]`, while the
+original finite, strictly increasing bounds are retained in archive metadata.
+Codec error tolerances for normalized fields are still interpreted in the
+original physical units. Normalization can be configured with or without a
+per-field codec override.
+
 The former `amrex-to-msg` keys `replace_invalid` and `[[variables]]` remain
-accepted for migration.
+accepted for migration, including `normalize` on a legacy variable.
+
+## Examples
+
+Annotated configurations are available in [`examples/`](examples):
+
+- [`amrex.toml`](examples/amrex.toml) covers AMReX field selection, scalar
+  types, invalid-value handling, normalization, and per-field codec overrides.
+- [`vti.toml`](examples/vti.toml) covers VTI array selection, vector component
+  naming, normalization, and absolute or relative error budgets.
+- [`codecs.toml`](examples/codecs.toml) lists every supported codec and its
+  error-tolerance requirements.
+
+Run one after replacing its sample paths and field names:
+
+```sh
+msg-convert --config examples/amrex.toml
+```

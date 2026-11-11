@@ -1,0 +1,34 @@
+# A compact codec reference. This is a valid VTI conversion configuration;
+# replace the paths and field names with ones from your dataset.
+input = "simulation.vti"
+output = "simulation.msg"
+
+[vti]
+fields = ["density"]
+
+[msg]
+# Supported codec values:
+#
+#   auto:lossless        exact native values; no error setting is allowed
+#   auto:smallest        smallest encoding that meets an error setting
+#   uniform:f64          one value per chunk; requires an error setting
+#   dense:f32            direct f32 values; f64 input requires an error setting
+#   dense:f64            direct f64 values; only valid for logical f64 fields
+#   quantized:u8         8-bit chunk-local quantization; requires an error
+#   quantized:u16        16-bit chunk-local quantization; requires an error
+#   quantized:u32        32-bit chunk-local quantization; requires an error
+#   affine:f64           3D affine fit; requires an error setting
+#   affine-residual:u8   affine fit plus 8-bit residuals; requires an error
+#   affine-residual:u16  affine fit plus 16-bit residuals; requires an error
+#   affine-residual:u32  affine fit plus 32-bit residuals; requires an error
+#
+# If [msg] is omitted, auto:lossless is the archive writer's default.
+codec = "auto:smallest"
+
+# An error table must contain absolute, relative_percent, or both. Values must
+# be non-negative; relative_percent may not exceed 100.
+error = { absolute = 0.000001, relative_percent = 0.01 }
+
+# [[msg.fields]] entries can replace this default for individual output fields.
+# Every named field must exist after import, and a field may appear only once.
+

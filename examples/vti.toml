@@ -1,0 +1,31 @@
+# Convert VTK XML ImageData. The .vti and .msg extensions let msg-convert infer
+# both formats, so input_format and output_format are not needed.
+input = "simulation.vti"
+output = "simulation.msg"
+
+[vti]
+# Import only these PointData arrays. An empty or omitted list imports every
+# array. Multi-component arrays are split into scalar MSG fields; for example,
+# velocity typically becomes velocity_x, velocity_y, and velocity_z.
+fields = ["density", "velocity"]
+
+[msg]
+# Apply a lossless policy to all output fields unless overridden below.
+codec = "auto:lossless"
+
+[[msg.fields]]
+# Overrides name the final MSG field, not the source VTI array. Lossy codecs
+# require an error budget. A relative percentage may be used by itself.
+name = "velocity_x"
+codec = "quantized:u16"
+error = { relative_percent = 0.1 }
+
+[[msg.fields]]
+# Absolute error may also be used by itself. Combining absolute and relative
+# bounds, as in examples/amrex.toml, is useful for values near zero. Normalized
+# fields store values in [0, 1] and preserve these original physical bounds.
+name = "density"
+codec = "affine-residual:u16"
+normalize = [0.0, 1.0]
+error = { absolute = 0.000001 }
+
