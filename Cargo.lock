@@ -367,6 +367,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "glam",
  "msg_amrex",
  "msg_vti",
  "multires_rs",
@@ -393,7 +394,7 @@ dependencies = [
 [[package]]
 name = "multires_rs"
 version = "0.1.0"
-source = "git+https://github.com/nicholasbl/multires_rs.git?branch=main#73fc9d1aa38b29a9f656eb93930d7dad406ecea4"
+source = "git+https://github.com/nicholasbl/multires_rs.git?branch=main#c8f27e3bb478d2f8ec0625a3c7646e5188f69791"
 dependencies = [
  "anyhow",
  "clap",

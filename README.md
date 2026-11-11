@@ -88,3 +88,20 @@ Run one after replacing its sample paths and field names:
 ```sh
 msg-convert --config examples/amrex.toml
 ```
+
+## Archive probe
+
+`msg-probe` validates an MSG archive and reports geometry, level layout,
+normalization and error metadata, decoded value ranges and sample counts,
+per-codec chunk counts and storage, block-level storage, and dense-size ratios.
+
+```sh
+msg-probe simulation.msg
+```
+
+For a fast report that validates metadata and blocks without decoding scalar
+chunks:
+
+```sh
+msg-probe --metadata-only simulation.msg
+```

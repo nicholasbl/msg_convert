@@ -7,9 +7,14 @@ edition = "2024"
 name = "msg-convert"
 path = "src/main.rs"
 
+[[bin]]
+name = "msg-probe"
+path = "src/bin/msg-probe.rs"
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+glam = "0.33"
 msg_amrex = { git = "https://github.com/nicholasbl/msg_amrex.git", branch = "main" }
 msg_vti = { git = "https://github.com/nicholasbl/msg_vti.git", branch = "main" }
 multires_rs = { git = "https://github.com/nicholasbl/multires_rs.git", branch = "main" }
